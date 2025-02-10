@@ -1,3 +1,4 @@
+# src/agent/custom_agent.py
 import json
 import logging
 import pdb
@@ -37,6 +38,12 @@ from src.utils.agent_state import AgentState
 from .custom_massage_manager import CustomMassageManager
 from .custom_views import CustomAgentOutput, CustomAgentStepInfo
 
+from pathlib import Path  # Import Path
+
+# Add this import to resolve the NameError
+from src.controller.custom_controller import CustomController
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +55,7 @@ class CustomAgent(Agent):
             add_infos: str = "",
             browser: Browser | None = None,
             browser_context: BrowserContext | None = None,
-            controller: Controller = Controller(),
+            controller: Controller = Controller(),  # Default to base Controller
             use_vision: bool = True,
             save_conversation_path: Optional[str] = None,
             max_failures: int = 5,
@@ -78,13 +85,18 @@ class CustomAgent(Agent):
             register_new_step_callback: Callable[['BrowserState', 'AgentOutput', int], None] | None = None,
             register_done_callback: Callable[['AgentHistoryList'], None] | None = None,
             tool_calling_method: Optional[str] = 'auto',
+            cv_path: Optional[Path] = None,  # Add cv_path
     ):
+        # ---  Conditional Controller Initialization (CRUCIAL PART) ---
+        if cv_path:  # If cv_path is provided, use the CustomController
+            controller = CustomController(cv_path=cv_path)
+        # --- End of Conditional Controller Initialization ---
         super().__init__(
             task=task,
             llm=llm,
             browser=browser,
             browser_context=browser_context,
-            controller=controller,
+            controller=controller,  # Use the selected controller
             use_vision=use_vision,
             save_conversation_path=save_conversation_path,
             max_failures=max_failures,
@@ -108,7 +120,7 @@ class CustomAgent(Agent):
             self.max_input_tokens = 64000
         else:
             self.use_deepseek_r1 = False
-        
+
         # record last actions
         self._last_actions = None
         # record extract content
@@ -129,6 +141,7 @@ class CustomAgent(Agent):
             max_error_length=self.max_error_length,
             max_actions_per_step=self.max_actions_per_step
         )
+        self.cv_path = cv_path
 
     def _setup_action_models(self) -> None:
         """Setup dynamic action models from controller's registry"""
@@ -209,7 +222,7 @@ class CustomAgent(Agent):
         ai_content = repair_json(ai_content)
         parsed_json = json.loads(ai_content)
         parsed: AgentOutput = self.AgentOutput(**parsed_json)
-        
+
         if parsed is None:
             logger.debug(ai_message.content)
             raise ValueError('Could not parse response.')
@@ -218,7 +231,7 @@ class CustomAgent(Agent):
         parsed.action = parsed.action[: self.max_actions_per_step]
         self._log_response(parsed)
         self.n_steps += 1
-        
+
         return parsed
 
     @time_execution_async("--step")
@@ -345,7 +358,7 @@ class CustomAgent(Agent):
 
                     logger.info("✅ Task completed successfully")
                     break
-            else:
+            else:  # This 'else' belongs to the 'for' loop
                 logger.info("❌ Failed to complete task in maximum steps")
                 if not self.extracted_content:
                     self.history.history[-1].result[-1].extracted_content = step_info.memory
@@ -354,7 +367,7 @@ class CustomAgent(Agent):
 
             return self.history
 
-        finally:
+        finally: # 'finally' always executes, regardless of exceptions or loop completion
             self.telemetry.capture(
                 AgentEndTelemetryEvent(
                     agent_id=self.agent_id,

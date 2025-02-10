@@ -13,7 +13,7 @@ import os
 logger = logging.getLogger(__name__)
 
 import gradio as gr
-
+from pathlib import Path  
 from browser_use.agent.service import Agent
 from playwright.async_api import async_playwright
 from browser_use.browser.browser import Browser, BrowserConfig
@@ -24,7 +24,8 @@ from browser_use.browser.context import (
 from langchain_ollama import ChatOllama
 from playwright.async_api import async_playwright
 from src.utils.agent_state import AgentState
-
+from typing import Optional, Type, List, Dict, Any, Callable  # Add Optional here
+from pathlib import Path
 from src.utils import utils
 from src.agent.custom_agent import CustomAgent
 from src.browser.custom_browser import CustomBrowser
@@ -34,6 +35,7 @@ from src.controller.custom_controller import CustomController
 from gradio.themes import Citrus, Default, Glass, Monochrome, Ocean, Origin, Soft, Base
 from src.utils.default_config_settings import default_config, load_config_from_file, save_config_to_file, save_current_config, update_ui_from_config
 from src.utils.utils import update_model_dropdown, get_latest_files, capture_screenshot
+from src.controller.custom_controller import CustomController  # <--- Import CustomController
 
 
 # Global variables for persistence
@@ -92,7 +94,8 @@ async def run_browser_agent(
         max_steps,
         use_vision,
         max_actions_per_step,
-        tool_calling_method
+        tool_calling_method,
+        cv_path: Optional[Path] = None  # Add cv_path here
 ):
     global _global_agent_state
     _global_agent_state.clear_stop()  # Clear any previous stop requests
@@ -157,7 +160,8 @@ async def run_browser_agent(
                 max_steps=max_steps,
                 use_vision=use_vision,
                 max_actions_per_step=max_actions_per_step,
-                tool_calling_method=tool_calling_method
+                tool_calling_method=tool_calling_method,
+                cv_path=cv_path
             )
         else:
             raise ValueError(f"Invalid agent type: {agent_type}")
@@ -314,7 +318,8 @@ async def run_custom_agent(
         max_steps,
         use_vision,
         max_actions_per_step,
-        tool_calling_method
+        tool_calling_method,
+        cv_path:Optional[Path] = None
 ):
     try:
         global _global_browser, _global_browser_context, _global_agent_state
@@ -333,7 +338,7 @@ async def run_custom_agent(
         else:
             chrome_path = None
 
-        controller = CustomController()
+        controller = CustomController(cv_path=cv_path)
 
         # Initialize global browser if needed
         if _global_browser is None:
@@ -371,7 +376,9 @@ async def run_custom_agent(
             agent_prompt_class=CustomAgentMessagePrompt,
             max_actions_per_step=max_actions_per_step,
             agent_state=_global_agent_state,
-            tool_calling_method=tool_calling_method
+            tool_calling_method=tool_calling_method,
+            cv_path=cv_path
+
         )
         history = await agent.run(max_steps=max_steps)
 
@@ -424,11 +431,19 @@ async def run_with_stream(
     max_steps,
     use_vision,
     max_actions_per_step,
-    tool_calling_method
+    tool_calling_method,
+    cv_file  # Changed: Receive the gr.File object, not a Path
 ):
     global _global_agent_state
     stream_vw = 80
     stream_vh = int(80 * window_h // window_w)
+
+    # --- Process cv_file (CRUCIAL PART) ---
+    cv_path = None
+    if cv_file:  # Check if a file was uploaded
+        cv_path = Path(cv_file.name)  # Get temporary file path, convert to Path
+    # --- End of cv_file Processing ---
+
     if not headless:
         result = await run_browser_agent(
             agent_type=agent_type,
@@ -452,7 +467,8 @@ async def run_with_stream(
             max_steps=max_steps,
             use_vision=use_vision,
             max_actions_per_step=max_actions_per_step,
-            tool_calling_method=tool_calling_method
+            tool_calling_method=tool_calling_method,
+            cv_path=cv_path  # Pass the processed cv_path
         )
         # Add HTML content at the start of the result array
         html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Using browser...</h1>"
@@ -484,7 +500,8 @@ async def run_with_stream(
                     max_steps=max_steps,
                     use_vision=use_vision,
                     max_actions_per_step=max_actions_per_step,
-                    tool_calling_method=tool_calling_method
+                    tool_calling_method=tool_calling_method,
+                    cv_path=cv_path  # Pass the processed cv_path
                 )
             )
 
@@ -492,7 +509,6 @@ async def run_with_stream(
             html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Using browser...</h1>"
             final_result = errors = model_actions = model_thoughts = ""
             latest_videos = trace = history_file = None
-
 
             # Periodically update the stream while the agent task is running
             while not agent_task.done():
@@ -598,9 +614,9 @@ async def close_global_browser():
         await _global_browser.close()
         _global_browser = None
         
-async def run_deep_search(research_task, max_search_iteration_input, max_query_per_iter_input, llm_provider, llm_model_name, llm_temperature, llm_base_url, llm_api_key, use_vision, headless):
+async def run_deep_search(research_task, max_search_iteration_input, max_query_per_iter_input, llm_provider, llm_model_name, llm_temperature, llm_base_url, llm_api_key, use_vision, headless, use_own_cookies, window_w, window_h):  # Removed inject_all_cookies
     from src.utils.deep_research import deep_research
-    
+
     llm = utils.get_llm_model(
             provider=llm_provider,
             model_name=llm_model_name,
@@ -608,11 +624,16 @@ async def run_deep_search(research_task, max_search_iteration_input, max_query_p
             base_url=llm_base_url,
             api_key=llm_api_key,
         )
-    markdown_content, file_path = await deep_research(research_task, llm, 
+    markdown_content, file_path = await deep_research(research_task, llm,
                                                         max_search_iterations=max_search_iteration_input,
                                                         max_query_num=max_query_per_iter_input,
                                                         use_vision=use_vision,
-                                                        headless=headless)
+                                                        headless=headless,
+                                                        use_own_cookies=use_own_cookies,
+                                                        # Removed inject_all_cookies
+                                                        window_w=window_w,
+                                                        window_h=window_h
+                                                        )
     return markdown_content, file_path
     
 
@@ -804,7 +825,8 @@ def create_ui(config, theme_name="Ocean"):
                     placeholder="Add any helpful context or instructions...",
                     info="Optional hints to help the LLM complete the task",
                 )
-
+                # Add a File component for CV upload
+                cv_upload = gr.File(label="Upload CV (Optional)", file_types=[".pdf"])
                 with gr.Row():
                     run_button = gr.Button("▶️ Run Agent", variant="primary", scale=2)
                     stop_button = gr.Button("⏹️ Stop", variant="stop", scale=1)
@@ -821,6 +843,12 @@ def create_ui(config, theme_name="Ocean"):
                     with gr.Row():
                         max_search_iteration_input = gr.Number(label="Max Search Iteration", value=20, precision=0) # precision=0 确保是整数
                         max_query_per_iter_input = gr.Number(label="Max Query per Iteration", value=5, precision=0) # precision=0 确保是整数
+                    use_own_cookies = gr.Checkbox(
+                    label="Use Own Cookies (Deep Research)",
+                    value=False,
+                    info="Use your browser's cookies for deep research. Requires browser_cookie3.",
+                )
+                    
                     research_button = gr.Button("Run Deep Research")
                     markdown_output_display = gr.Markdown(label="Research Report")
                     markdown_download = gr.File(label="Download Research Report")
@@ -910,7 +938,7 @@ def create_ui(config, theme_name="Ocean"):
                             agent_type, llm_provider, llm_model_name, llm_temperature, llm_base_url, llm_api_key,
                             use_own_browser, keep_browser_open, headless, disable_security, window_w, window_h,
                             save_recording_path, save_agent_history_path, save_trace_path,  # Include the new path
-                            enable_recording, task, add_infos, max_steps, use_vision, max_actions_per_step, tool_calling_method
+                            enable_recording, task, add_infos, max_steps, use_vision, max_actions_per_step, tool_calling_method,cv_upload
                         ],
                     outputs=[
                         browser_view,           # Browser view
@@ -929,7 +957,7 @@ def create_ui(config, theme_name="Ocean"):
                 # Run Deep Research
                 research_button.click(
                         fn=run_deep_search,
-                        inputs=[research_task_input, max_search_iteration_input, max_query_per_iter_input, llm_provider, llm_model_name, llm_temperature, llm_base_url, llm_api_key, use_vision, headless],
+                        inputs=[research_task_input, max_search_iteration_input, max_query_per_iter_input, llm_provider, llm_model_name, llm_temperature, llm_base_url, llm_api_key, use_vision, headless,use_own_cookies, window_w, window_h],
                         outputs=[markdown_output_display, markdown_download]
                     )
 
